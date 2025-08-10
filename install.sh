@@ -1,93 +1,132 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# This script has been modified to remove all systemd service creation and
+# autologin configuration. It sets up the unlock script and a secure wrapper,
+# and directly configures /etc/rc.local to execute the wrapper on boot.
 
-# ==============================================================================
-# WARNING: This script modifies system files and requires superuser privileges.
-# Please review the code before running it. Use at your own risk.
-# ==============================================================================
+set -e
 
-# --- Configuration ---
-# Get the current user and home directory to ensure paths are correct.
-USER_NAME=$(whoami)
-HOME_DIR=$(eval echo ~$USER_NAME)
-SERVICE_NAME="testcode.service"
-SERVICE_FILE_PATH="/etc/systemd/system/$SERVICE_NAME"
+# --- Configuration Variables ---
+# The name of the new script to be run for the unlock process.
+UNLOCK_SCRIPT_NAME="testcode.py"
+UNLOCK_SCRIPT_PATH="/usr/local/bin/$UNLOCK_SCRIPT_NAME"
 
-# URLs for the Python scripts and the requirements file on GitHub
-TESTCODE_URL="https://raw.githubusercontent.com/ilovelasagne/basalt/main/testcode.py"
-TEST_URL="https://raw.githubusercontent.com/ilovelasagne/basalt/main/test.py"
-REQUIREMENTS_URL="https://raw.githubusercontent.com/ilovelasagne/basalt/main/requirements.txt"
+# The name of the final script to be run after installation.
+POST_INSTALL_SCRIPT="test.py"
 
-# Define the full paths for the downloaded files
-SCRIPT_PATH="$HOME_DIR/$(basename $TESTCODE_URL)"
-TEST_SCRIPT_PATH="$HOME_DIR/$(basename $TEST_URL)"
-REQUIREMENTS_FILE_PATH="$HOME_DIR/$(basename $REQUIREMENTS_URL)"
-LOG_FILE="$HOME_DIR/boot_log.txt"
+# The secure wrapper script that handles failure counts and runs the unlock script.
+SECURE_WRAPPER="/usr/local/bin/face_unlock_secure.sh"
 
-# --- Step 1: Download Python scripts and requirements file from GitHub ---
-echo "1. Downloading Python scripts and requirements.txt from GitHub..."
-wget -O "$SCRIPT_PATH" "$TESTCODE_URL"
-wget -O "$TEST_SCRIPT_PATH" "$TEST_URL"
-wget -O "$REQUIREMENTS_FILE_PATH" "$REQUIREMENTS_URL"
+# The user and TTY to configure for autologin.
+USER_NAME="$(logname)"
+TTY_NUM="1"
 
-# --- Step 2: Make the Python script executable ---
-echo "2. Making the Python script executable..."
-chmod +x "$SCRIPT_PATH"
+# File to track failure count for the secure wrapper's failsafe.
+FAIL_COUNT_FILE="/tmp/face_unlock_failcount"
 
-# --- Step 3: Install dependencies ---
-echo "3. Installing dependencies for the Python scripts..."
+# URL for the dependencies file
+DEPENDENCIES_URL="https://raw.githubusercontent.com/ilovelasagne/basalt/main/dependencies.txt"
+DEPENDENCIES_FILE="dependencies.txt"
 
-# First, install apt packages for Python development and GUI library.
-sudo apt-get update
-sudo apt-get install -y python3-pip python3-tk python3-dev
+# --- Helper Functions ---
+err() { echo "[ERROR] $1" >&2; exit 1; }
+info() { echo "[INFO] $1"; }
+ok() { echo "[OK] $1"; }
 
-# Next, use pip to install the required Python libraries.
-pip3 install opencv-python face-recognition Pillow numpy --break-system-packages
+# --- Installation Steps ---
 
-# --- Step 4: Create the systemd service file ---
-echo "4. Creating systemd service file: $SERVICE_FILE_PATH"
-# We use 'sudo tee' to write the service file to the protected directory.
-sudo tee "$SERVICE_FILE_PATH" > /dev/null << EOF
-[Unit]
-Description=My custom boot script
-# This ensures the network is up before the script runs.
-After=network.target
+# Fetch the necessary Python scripts from GitHub
+info "Fetching Python scripts from GitHub..."
+curl -o "$UNLOCK_SCRIPT_NAME" https://raw.githubusercontent.com/ilovelasagne/basalt/refs/heads/main/testcode.py || err "Failed to download $UNLOCK_SCRIPT_NAME"
+curl -o "$POST_INSTALL_SCRIPT" https://raw.githubusercontent.com/ilovelasagne/basalt/refs/heads/main/test.py || err "Failed to download $POST_INSTALL_SCRIPT"
 
-[Service]
-# The full path to the executable script.
-ExecStart=$SCRIPT_PATH
-# 'oneshot' means the service is short-lived and exits after running.
-Type=oneshot
-# 'RemainAfterExit=yes' keeps the service in an 'active' state after it finishes.
-RemainAfterExit=yes
-# Runs the script as the current user, not as the root user.
-User=$USER_NAME
+# Fetch dependencies
+info "Fetching dependencies from GitHub..."
+curl -o "$DEPENDENCIES_FILE" "$DEPENDENCIES_URL" || err "Failed to download dependencies.txt"
 
-[Install]
-# The service will be started during the boot process after all multi-user services are up.
-WantedBy=multi-user.target
+# Install dependencies using pip
+info "Installing Python dependencies..."
+# Check if python3-pip is installed
+if ! command -v pip3 &> /dev/null
+then
+    info "pip3 not found, installing it now."
+    sudo apt-get update && sudo apt-get install -y python3-pip || err "Failed to install python3-pip"
+fi
+sudo python3 -m pip install -r "$DEPENDENCIES_FILE" || err "Failed to install dependencies"
+
+# Check if the unlock script exists after fetching.
+[ -f "$UNLOCK_SCRIPT_NAME" ] || err "$UNLOCK_SCRIPT_NAME not found in current directory. Download failed."
+
+info "Copying $UNLOCK_SCRIPT_NAME to $UNLOCK_SCRIPT_PATH"
+sudo cp "$UNLOCK_SCRIPT_NAME" "$UNLOCK_SCRIPT_PATH" || err "Failed to copy $UNLOCK_SCRIPT_NAME to $UNLOCK_SCRIPT_PATH"
+sudo chmod +x "$UNLOCK_SCRIPT_PATH" || err "Failed to make $UNLOCK_SCRIPT_PATH executable"
+
+# --- RCONF or Init System Configuration ---
+# The original systemd-specific autologin setup has been removed.
+# This section adds the command to /etc/rc.local, which is the rconf runlevel file.
+
+info "Configuring rconf by adding a command to /etc/rc.local"
+# Ensure the file exists and is executable
+sudo touch /etc/rc.local
+sudo chmod +x /etc/rc.local
+
+# Add the command to the file.
+# The `exec` command is used to replace the current shell with the new process,
+# which is a common practice for init scripts to keep the process in the foreground.
+# We also add a failsafe comment to make it easier to find and remove later.
+if ! grep -q "$SECURE_WRAPPER" /etc/rc.local; then
+    sudo sed -i '/^exit 0/d' /etc/rc.local
+    echo "# Face Unlock Failsafe - Do not remove this comment." | sudo tee -a /etc/rc.local >/dev/null
+    echo "exec $SECURE_WRAPPER" | sudo tee -a /etc/rc.local >/dev/null
+    echo "exit 0" | sudo tee -a /etc/rc.local >/dev/null
+else
+    info "The secure wrapper is already configured in /etc/rc.local."
+fi
+
+info "Creating secure wrapper script at $SECURE_WRAPPER"
+cat <<EOF | sudo tee "$SECURE_WRAPPER" >/dev/null
+#!/usr/bin/env bash
+# This wrapper script handles the failure count and the failsafe mechanism.
+# It runs the unlock script in the foreground.
+trap '' INT TSTP TERM HUP QUIT
+FAIL_FILE="$FAIL_COUNT_FILE"
+
+if [ ! -f "\$FAIL_FILE" ]; then
+    echo 0 > "\$FAIL_FILE"
+fi
+
+COUNT=\$(cat "\$FAIL_FILE")
+if [ "\$COUNT" -ge 3 ]; then
+    echo "[FAILSAFE] Too many failures, disabling autologin..."
+    # If the number of failures reaches the failsafe limit, remove the autologin line
+    # from the rc.local file. We use a failsafe comment to ensure we only remove our line.
+    sudo sed -i '/exec $SECURE_WRAPPER/d' /etc/rc.local
+    sudo sed -i '/# Face Unlock Failsafe/d' /etc/rc.local
+
+    loginctl terminate-user "\$USER"
+    exit 1
+fi
+
+# Run the user's unlock script in the foreground.
+/usr/local/bin/$UNLOCK_SCRIPT_NAME
+if [ \$? -ne 0 ]; then
+    COUNT=\$((COUNT + 1))
+    echo "\$COUNT" > "\$FAIL_FILE"
+    echo "[FAIL] Unlock script failed (\$COUNT/3)."
+    sleep 3
+    loginctl terminate-user "\$USER"
+else
+    echo 0 > "\$FAIL_FILE"
+fi
 EOF
+sudo chmod +x "$SECURE_WRAPPER" || err "Failed to make $SECURE_WRAPPER executable"
 
-# --- Step 5: Reload, enable, and start the service ---
-echo "5. Reloading systemd to recognize the new service..."
-sudo systemctl daemon-reload
+# --- Final Execution ---
 
-echo "6. Enabling the service to start on boot..."
-sudo systemctl enable "$SERVICE_NAME"
+info "Installation setup complete."
 
-echo "7. Starting the service now to test it..."
-sudo systemctl start "$SERVICE_NAME"
+# Execute the final script.
+info "Executing $POST_INSTALL_SCRIPT..."
+[ -f "$POST_INSTALL_SCRIPT" ] || err "$POST_INSTALL_SCRIPT not found in current directory."
+python3 "$POST_INSTALL_SCRIPT" || err "Failed to execute $POST_INSTALL_SCRIPT"
 
-# --- Step 6: Verify and provide next steps ---
-echo "---"
-echo "Setup complete. Here is the current status of the service:"
-sudo systemctl status "$SERVICE_NAME"
-echo "You can check the log file at: $LOG_FILE"
-echo ""
-echo "To disable this service from starting at boot, run:"
-echo "    sudo systemctl disable $SERVICE_NAME"
-echo "To completely remove the service and scripts, run:"
-echo "    sudo rm $SERVICE_FILE_PATH"
-echo "    sudo rm $SCRIPT_PATH"
-echo "    sudo rm $TEST_SCRIPT_PATH"
-echo "    sudo rm $REQUIREMENTS_FILE_PATH"
-echo "You may also want to remove the log file with: rm $LOG_FILE"
+ok "All tasks finished."
