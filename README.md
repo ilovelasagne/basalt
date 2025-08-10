@@ -1,2 +1,3 @@
 # basalt
-A cli based lockscreen that is rock solid. Now with face id!
+A cli based lockscreen that is rock solid.
+Featuring face identification technology!
