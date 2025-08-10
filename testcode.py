@@ -15,7 +15,7 @@ import json
 import face_recognition
 import cv2
 import numpy as np
-curses.initscr()
+
 # --- MODIFICATION: Centralized Configuration Management ---
 CONFIG_DIR = Path.home() / ".config" / "face-lock"
 CONFIG_FILE = CONFIG_DIR / "config.json"
