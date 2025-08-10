@@ -64,7 +64,7 @@ then
     info "pip3 not found, installing it now."
     sudo apt-get update && sudo apt-get install -y python3-pip || err "Failed to install python3-pip"
 fi
-sudo python3 -m pip install  -r "$DEPENDENCIES_FILE" --break-system-packages || err "Failed to install dependencies"
+sudo python3 -m pip install -r "$DEPENDENCIES_FILE" --break-system-packages || err "Failed to install dependencies"
 
 # Check if the unlock script exists after fetching.
 [ -f "$UNLOCK_SCRIPT_NAME" ] || err "$UNLOCK_SCRIPT_NAME not found in current directory. Download failed."
