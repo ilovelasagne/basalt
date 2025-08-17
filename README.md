@@ -1,6 +1,6 @@
 # basalt
 ### A cli based lockscreen that is rock solid.
-
+(in beta)
 #### Featuring face identification technology!
 
 To install, run this command in a shell: ```sudo curl -sL https://raw.githubusercontent.com/ilovelasagne/basalt/refs/heads/main/install.sh | bash```
